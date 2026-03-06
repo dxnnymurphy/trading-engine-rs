@@ -1,0 +1,50 @@
+Tokio Tungstenite
+This is a WebSocket stream library build on the Tokio async framework.
+Installation:
+cargo add tokio-tungstenite -F native-tls
+NB: native-tls relies on the pkg-config and libssl-dev packages.
+
+Connecting to a WS Endpoint
+let url = "wss://echo.websocket.org";
+let (ws_stream, response) = connect_async(&url)
+    .await
+    .expect(&format!("Failed to connect to url: {}", url));
+log::info!("WebSocket connection established: {:?}", response);
+Response can provide various information about the connection, however isn't always necessary.
+
+Using the Streams
+The split method splits the WebSocketStream into two parts to allow for sending and receiving messages.
+let (mut write, mut read) = ws_stream.split();
+
+Reading a Single Message
+if let Some(message) = read.next().await {
+    match message {
+        Ok(msg) => log::info!("Received message: {}", msg),
+        Err(e) => log::error!("Error receiving message: {}", e),
+    }
+}
+
+Sending a Message
+The write sinks send message takes a tokio_tungstenite::tungstenite::Message enum, which consists of:
+* Text
+* Binary
+* Close - (option to close the connection)
+To send a basic text message:
+let msg = Message::Text("Hello WebSocket".into());
+write.send(msg).await.expect("Failed to send message");
+
+Reading Messages 
+Reading a single message can be good when expecting an immediate response, but realistically a high performing application needs to split 
+from the main thread. The idea is:
+async fn handle_ws_messages(mut read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>) {
+    while let Some(message) = read.next().await {
+        match message {
+            Ok(msg) => log::info!("Received message: {}", msg),
+            Err(e) => log::error!("Error receiving message: {}", e),
+        }
+    }
+}
+This can be started properly using spawn:
+tokio::spawn(async move {
+    handle_ws_messages(read).await;
+});

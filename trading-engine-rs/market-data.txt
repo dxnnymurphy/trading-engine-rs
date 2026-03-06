@@ -1,0 +1,24 @@
+1. OHLC (Candle)
+   Open, High, Low, Close - this is a candlestick that summarises price action over a time period
+   Example (From Kraken API for BTC/USD):
+   {
+    "channel": "ohlc",
+    "data": [
+        {
+        "close": 78737.7,
+        "high": 78739.9,
+        "interval": 1,
+        "interval_begin": "2026-02-01T00:03:00.000000000Z",
+        "low": 78719.9,
+        "open": 78719.9,
+        "symbol": "BTC/USD",
+        "timestamp": "2026-02-01T00:04:00.000000Z",
+        "trades": 19,
+        "volume": 0.18719521,
+        "vwap": 78736
+        }
+     ],
+     "timestamp": "2026-02-01T00:03:15.642170480Z",
+     "type": "update"
+    }
+    

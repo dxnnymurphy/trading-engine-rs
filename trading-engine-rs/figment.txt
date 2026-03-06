@@ -1,0 +1,53 @@
+/// Tests
+/// Figment allows for a range of providers including env, toml, yaml, json etc.
+/// Within a figment you get:
+/// - Metadata, shows information on sources, location sources are loaded in the code, and Interpolation
+///   how to interpret keys / nested paths. Useful for errors!
+/// - Profiles, allow for different configurations to be loaded based on environment, in multiple ways
+/// - Providers, the actual source of configuration data, they provide dictionaries within profiles. Providers
+///   can be layered to allow for overrides, .merge will override earlier ones, .join will only add values that don't
+///   exist yet.
+/// Jail is used to create temporary files and set env vars for testing.
+/// Ways to configure:
+/// 1. All in one file:
+/// - Eg. a toml file with multiple profiles, eg. 
+/// [dev]
+/// key = "value"
+/// [prod]
+/// key = "othervalue"
+/// When merging the file in, use .nested() to treat each section as a profile, then use select to pick the profile.
+/// 2. Shared Config File + Profile Specific File
+/// - Eg. a toml file with shared config, and another toml file with profile specific config.
+/// Order matters! Typically you would do shared first, then profile specific to allow overrides, then env.
+/// 
+/// Extracting values:
+/// 1. extract_inner<T>("key.path") -> Result<T, Err>, used for dynamically extracting single values.
+/// 2. extract<T>() -> Result<T, Err>, used for extracting entire structs that implement Deserialize.
+#[test]
+fn test_figment_all_in_one() {
+    figment::Jail::expect_with({|jail| {
+        jail.create_file("config.toml", "[dev]\n api = 'localhost:3000'\n[prod]\n api = 'aws-ec2:3000'")?;
+        let figment_prod = Figment::new()
+            .merge(Toml::file("config.toml").nested())
+            .select("prod");
+        let figment_dev = Figment::new()
+            .merge(Toml::file("config.toml").nested())
+            .select("dev");
+        assert_eq!(figment_dev.extract_inner::<String>("api")?, "localhost:3000");
+        assert_eq!(figment_prod.extract_inner::<String>("api")?, "aws-ec2:3000");
+        Ok(())
+    }});
+}
+
+#[test]
+fn test_figment_shared_config() {
+    figment::Jail::expect_with({|jail| {
+        jail.create_file("shared_config.toml", "[web]\n use_ssl = false")?;
+        jail.create_file("config.toml", "[web]\n use_ssl = true")?;
+        let figment = Figment::new()
+            .merge(Toml::file("shared_config.toml"))
+            .merge(Toml::file("config.toml"));
+        assert_eq!(figment.extract_inner::<bool>("web.use_ssl")?, true);
+        Ok(())
+    }});
+}

@@ -1,0 +1,9 @@
+[default]
+api_url = "wss://ws.kraken.com/v2"
+timeout = 30
+
+[dev]
+api_url = "localhost:8000"
+
+[prod]
+api_url = "localhost:9000"

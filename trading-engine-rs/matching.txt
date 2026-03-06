@@ -1,0 +1,136 @@
+impl SimpleOrderBook {
+    pub fn new() -> Self {
+        Self { bids: BTreeMap::new(), asks: BTreeMap::new(), level_nodes: SlotMap::with_key(), orders: HashMap::new() }
+    }
+
+    pub fn can_match(&self, side: Side, price: Price) -> bool {
+        match side {
+            Side::Buy => {
+                // Get best ask price and check if it is equal or less to the buy price
+                self.asks.iter().next().map_or(false, |(&ask_price, _)| ask_price <= price)
+            }
+            Side::Sell => {
+                // Get best bid price and check if it is equal or higher than sell price
+                self.bids.iter().next().map_or(false, |(&Reverse(bid_price), _)| bid_price >= price)
+            }
+        }
+    }
+
+    pub fn match_orders(&mut self) -> Trades {
+        let mut trades: Trades = vec![];
+        loop {
+            if self.bids.is_empty() || self.asks.is_empty() {
+                break;
+            }
+            // Unwrap is safe here due to above empty check
+            let bid_price = *self.bids.keys().next().unwrap();
+            let ask_price = *self.asks.keys().next().unwrap();
+
+            if bid_price.0 < ask_price {
+                log::info!("No more matches possible, best bid price {} is lower than best ask price {}", bid_price.0, ask_price);
+                break;
+            }
+
+            loop {
+                let bid_node_id = match self
+                    .bids
+                    .get_mut(&bid_price)
+                    .and_then(|level| next_active_node_id(level, &self.level_nodes))
+                {
+                    Some(id) => id,
+                    None => break,
+                };
+
+                let ask_node_id = match self
+                    .asks
+                    .get_mut(&ask_price)
+                    .and_then(|level| next_active_node_id(level, &self.level_nodes))
+                {
+                    Some(id) => id,
+                    None => break,
+                };
+
+                let bid_ptr = match self
+                    .level_nodes
+                    .get(bid_node_id)
+                    .map(|node| Rc::clone(&node.order))
+                {
+                    Some(ptr) => ptr,
+                    None => break,
+                };
+
+                let ask_ptr = match self
+                    .level_nodes
+                    .get(ask_node_id)
+                    .map(|node| Rc::clone(&node.order))
+                {
+                    Some(ptr) => ptr,
+                    None => break,
+                };
+
+                let bid_active = self
+                    .level_nodes
+                    .get(bid_node_id)
+                    .map_or(false, |n| n.active);
+                let ask_active = self
+                    .level_nodes
+                    .get(ask_node_id)
+                    .map_or(false, |n| n.active);
+
+                if !bid_active || !ask_active {
+                    break;
+                }
+
+                let (bid_id, ask_id, bid_filled, ask_filled) = {
+                    let mut best_bid = bid_ptr.borrow_mut();
+                    let mut best_ask = ask_ptr.borrow_mut();
+
+                    let quantity: Quantity = std::cmp::min(best_bid.remaining_quantity, best_ask.remaining_quantity);
+                    best_bid.fill(quantity).unwrap(); // Check the unwrap here
+                    best_ask.fill(quantity).unwrap();
+
+                    trades.push(Trade::new(
+                        TradeInfo { order_id: best_bid.id, price: best_bid.price, quantity },
+                        TradeInfo { order_id: best_ask.id, price: best_ask.price, quantity },
+                    ));
+
+                    (best_bid.id, best_ask.id, best_bid.is_filled(), best_ask.is_filled())
+                };
+
+                if bid_filled {
+                    self.level_nodes.remove(bid_node_id);
+                    self.orders.remove(&bid_id);
+                }
+
+                if ask_filled {
+                    self.level_nodes.remove(ask_node_id);
+                    self.orders.remove(&ask_id);
+                }
+
+                if let Some(level) = self.bids.get_mut(&bid_price) {
+                    let _ = next_active_node_id(level, &self.level_nodes);
+                }
+                if let Some(level) = self.asks.get_mut(&ask_price) {
+                    let _ = next_active_node_id(level, &self.level_nodes);
+                }
+
+                if self
+                    .bids
+                    .get(&bid_price)
+                    .map_or(false, |level| level.head >= level.node_ids.len())
+                {
+                    self.bids.remove(&bid_price);
+                }
+
+                if self
+                    .asks
+                    .get(&ask_price)
+                    .map_or(false, |level| level.head >= level.node_ids.len())
+                {
+                    self.asks.remove(&ask_price);
+                }
+            }
+        }
+        trades
+    }
+}

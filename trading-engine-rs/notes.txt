@@ -1,0 +1,17 @@
+Rust Todos:
+1. Config (Figment) DONE
+2. Profiling
+3. Zero copy serde parsing using lifetimes TBC!!
+
+Implementation stage 1: Market Data
+1. Candle (Interval) data - initial implementation subscribe to once per minute interval data from the Kraken API.
+2. Order Book (L2) data - construct an order book of a configurable amount of levels for the given products.
+3. Abstract this to an async / multithreaded design using spawn for a group of async tasks (?) Tokio for ws
+4. Candle data should be sent through a mpsc channel to the strategy thread
+5. Order book should be available with some sort of RwLock implementation (this is a bottleneck need to think about this)
+
+
+
+DashMap!!! lock free map with ns access ???
+
+

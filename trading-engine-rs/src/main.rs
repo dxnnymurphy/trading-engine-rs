@@ -9,6 +9,7 @@ struct AppConfig {
 }
 
 mod utils;
+mod models;
 mod orderbook;
 mod websocket;
 use websocket::kraken_client::KrakenWSClient;

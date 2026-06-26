@@ -1,12 +1,18 @@
-pub mod models;
-use models::{OrderError, OrderId, OrderModify, OrderPtr};
+use crate::models::messages::{NewOrderCommand, ModifyOrderCommand, CancelOrderCommand};
 
-// Order Modify TBC...
-
+/// Trait defining generic behaviour of a L2 OrderBook, can be implemented in different ways 
+/// and benchmarked for performance.
 pub trait OrderBook {
-    fn add_order(&mut self, order: OrderPtr) -> Result<(), OrderError>;
-    fn modify_order(&mut self, order_modify: OrderModify) -> Result<(), OrderError>;
-    fn cancel_order(&mut self, order_id: OrderId) -> Result<(), OrderError>;
+    type OrderId;
+    type Error;
+
+
+    fn new_order(&mut self, command: NewOrderCommand) -> Result<Self::OrderId, Self::Error>;
+    fn replace_order(&mut self, command: ModifyOrderCommand) -> Result<(), Self::Error>;
+    fn cancel_order(&mut self, command: CancelOrderCommand) -> Result<(), Self::Error>;
 }
 
-pub mod simple_order_book;
+pub mod types;
+
+/// Implementation Modules
+pub mod v1;

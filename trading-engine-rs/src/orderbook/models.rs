@@ -13,6 +13,9 @@ pub enum OrderError {
 
     #[error("Cannot fill more than the remaining quantity of the order")]
     Overfill,
+
+    #[error("Order pool exhausted")]
+    PoolExhausted,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -32,6 +35,7 @@ pub type OrderId = i64;
 
 pub struct Order {
     pub id: OrderId,
+    pub orig_order_id: Option<OrderId>,
     pub side: Side,
     pub order_type: OrderType,
     pub price: Price,
@@ -41,7 +45,7 @@ pub struct Order {
 
 impl Order {
     pub fn new(id: OrderId, side: Side, order_type: OrderType, price: Price, quantity: Quantity) -> Self {
-        Self { id, side, order_type, price, initial_quantity: quantity, remaining_quantity: quantity }
+        Self { id, orig_order_id: None, side, order_type, price, initial_quantity: quantity, remaining_quantity: quantity }
     }
 
     pub fn get_filled_quantity(&self) -> Quantity {

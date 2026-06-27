@@ -34,7 +34,7 @@ impl From<BookInternalError> for OrderBookError {
 
 /// Implementation of OrderBook, an arena based approach containing nodes with preallocated Orders.
 /// Using a BTreeMap to store ordered Pricee levels
-struct Book {
+pub struct Book {
     /// price levels and arena nodes
     levels: Vec<PriceLevel>,
     arena: Vec<ArenaNode>,
@@ -70,9 +70,14 @@ impl Book {
             // price level so performance implication should be less
             asks: BTreeMap::new(),
             bids: BTreeMap::new(),
+            // Set on startup for now, need to figure out how to address this if was a Crypto 24/7 market.
             current_date_prefix: Self::generate_date_prefix(),
             current_daily_seq: 0
         }
+    }
+
+    pub fn log_state(&self) {
+        log::info!("asks: {:?} | bids: {:?} | orders: {:?}", self.asks, self.bids, self.order_index);
     }
 
     // Helper methods
@@ -86,12 +91,6 @@ impl Book {
     /// Generate an order id in the format yyyymmddX where X is the order number of the day, currently configured to take
     /// 1 million per day
     fn generate_order_id(&mut self) -> OrderId {
-        let today = Self::generate_date_prefix();
-        if self.current_date_prefix != today {
-            self.current_date_prefix = today;
-            self.current_daily_seq = 0;
-        }
-
         self.current_daily_seq += 1;
         debug_assert!(
             self.current_daily_seq < Self::DAILY_SEQ_SCALE,
@@ -189,6 +188,10 @@ impl Book {
             }
         };
 
+        let appended_node = self.arena_node_mut(arena_id)?;
+        appended_node.prev = prev_tail_id;
+        appended_node.next = None;
+
         if let Some(tail_id) = prev_tail_id {
             self.arena_node_mut(tail_id)?.next = Some(arena_id);
         }
@@ -205,12 +208,12 @@ impl Book {
                 self.arena_node_mut(n)?.prev = Some(p);
                 self.arena_node_mut(p)?.next = Some(n);
             },
-            (Some(n), None) => {
+            (None, Some(n)) => {
                 // First order in level
                 self.arena_node_mut(n)?.prev = None;
                 self.level_mut(level_id)?.head = Some(n);
             },
-            (None, Some(p)) => {
+            (Some(p), None) => {
                 // Last order in level
                 self.arena_node_mut(p)?.next = None;
                 self.level_mut(level_id)?.tail = Some(p);
@@ -233,6 +236,7 @@ impl Book {
         };
         Ok(())
     }
+
 }
 
 impl OrderBook for Book {
@@ -251,7 +255,7 @@ impl OrderBook for Book {
         let arena_id = self.create_arena_node();
         self.arena_node_mut(arena_id)
             .map_err(OrderBookError::from)?
-            .alloc(order_id, command, level_tail, None, level_id);
+            .alloc(order_id, command, level_tail, None, level_id)?;
 
         self.order_index.insert(order_id, arena_id);
 
@@ -278,6 +282,7 @@ impl OrderBook for Book {
     fn replace_order(&mut self, command : ModifyOrderCommand) -> Result<(), Self::Error> {
         let arena_id = self.order_index.get(&command.order_id).ok_or(OrderBookError::OrderNotFound { order_id: command.order_id })?.clone();
         let command_price = command.price;
+        let quantity_changed = command.quantity.is_some();
         let (order_level, order_side, next, prev) = {
             let arena_node = self.arena_node_mut(arena_id)
                 .map_err(OrderBookError::from)?;
@@ -285,8 +290,8 @@ impl OrderBook for Book {
             (arena_node.level, arena_node.order.side, arena_node.next, arena_node.prev)
         };
     
-        // Modify Price: remove from original level, append to end of new level
         if let Some(new_price) = command_price {
+            // Modify Price: remove from original level, append to end of new level
             let orig_level_id = order_level.ok_or(OrderBookError::InternalState { reason: "missing level id for order" })?;
             self.remove_from_level(prev, next, Some(orig_level_id))
                 .map_err(OrderBookError::from)?;
@@ -294,6 +299,13 @@ impl OrderBook for Book {
             let new_level_id = self.get_or_create_level(order_side, new_price)
                 .map_err(OrderBookError::from)?;
             self.append_to_level(arena_id, new_level_id)
+                .map_err(OrderBookError::from)?;
+        } else if quantity_changed {
+            // Modify Quantity: append to end of existing level
+            let orig_level_id = order_level.ok_or(OrderBookError::InternalState { reason: "missing level id for order" })?;
+            self.remove_from_level(prev, next, Some(orig_level_id))
+                .map_err(OrderBookError::from)?;
+            self.append_to_level(arena_id, orig_level_id)
                 .map_err(OrderBookError::from)?;
         }
 
@@ -303,15 +315,142 @@ impl OrderBook for Book {
 
 #[cfg(test)]
 mod tests {
+    use common::logging::init_logging;
     use crate::models::messages::{CancelOrderCommand, ModifyOrderCommand, NewOrderCommand};
     use crate::models::types::Side;
     use crate::orderbook::OrderBook;
     use crate::orderbook::types::OrderBookError;
     use super::Book;
+    use std::collections::HashSet;
     use std::cmp::Reverse;
+    use std::sync::Once;
+
+    static TEST_LOG_INIT: Once = Once::new();
+
+    fn init_test_logging_once() {
+        TEST_LOG_INIT.call_once(|| {
+            init_logging();
+        });
+    }
+
+    fn validate_invariants(orderbook: &Book) -> Result<(), &'static str> {
+        let mut visited_nodes: HashSet<usize> = HashSet::new();
+        let mut seen_order_ids: HashSet<u64> = HashSet::new();
+
+        for (level_id, level) in orderbook.levels.iter().enumerate() {
+            match (level.head, level.tail) {
+                (None, None) => continue,
+                (Some(_), Some(_)) => {}
+                _ => return Err("level head/tail mismatch"),
+            }
+
+            let mut cursor = level.head.ok_or("non-empty level missing head")?;
+            let mut prev: Option<usize> = None;
+            let mut safety = 0usize;
+
+            loop {
+                safety += 1;
+                if safety > orderbook.arena.len().saturating_add(1) {
+                    return Err("level linked-list cycle detected");
+                }
+
+                let node = orderbook.arena.get(cursor).ok_or("level points to missing arena node")?;
+                if !node.active {
+                    return Err("level points to inactive node");
+                }
+
+                if node.level != Some(level_id) {
+                    return Err("node level id mismatch");
+                }
+
+                if node.prev != prev {
+                    return Err("node prev pointer mismatch");
+                }
+
+                if node.order.side != level.side || node.order.price != level.price {
+                    return Err("node side/price mismatch with level");
+                }
+
+                let idx_arena_id = orderbook
+                    .order_index
+                    .get(&node.order.order_id)
+                    .copied()
+                    .ok_or("active node missing from order_index")?;
+                if idx_arena_id != cursor {
+                    return Err("order_index points to wrong arena node");
+                }
+
+                if !seen_order_ids.insert(node.order.order_id) {
+                    return Err("duplicate order_id detected");
+                }
+                visited_nodes.insert(cursor);
+
+                match node.next {
+                    Some(next_id) => {
+                        let next_node = orderbook.arena.get(next_id).ok_or("next pointer points to missing node")?;
+                        if next_node.prev != Some(cursor) {
+                            return Err("next.prev back-link mismatch");
+                        }
+                        prev = Some(cursor);
+                        cursor = next_id;
+                    }
+                    None => {
+                        if Some(cursor) != level.tail {
+                            return Err("tail pointer mismatch");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (&price, &level_id) in &orderbook.asks {
+            let level = orderbook.levels.get(level_id).ok_or("ask map references missing level")?;
+            if level.side != Side::Sell || level.price != price || level.is_empty() {
+                return Err("ask map/level mismatch");
+            }
+        }
+
+        for (&rev_price, &level_id) in &orderbook.bids {
+            let level = orderbook.levels.get(level_id).ok_or("bid map references missing level")?;
+            if level.side != Side::Buy || level.price != rev_price.0 || level.is_empty() {
+                return Err("bid map/level mismatch");
+            }
+        }
+
+        for (arena_id, node) in orderbook.arena.iter().enumerate() {
+            if node.active {
+                if node.level.is_none() {
+                    return Err("active node missing level id");
+                }
+                let idx_arena_id = orderbook
+                    .order_index
+                    .get(&node.order.order_id)
+                    .copied()
+                    .ok_or("active node missing from order_index")?;
+                if idx_arena_id != arena_id {
+                    return Err("active node and order_index mismatch");
+                }
+                if !visited_nodes.contains(&arena_id) {
+                    return Err("active node is not reachable from level head");
+                }
+            }
+        }
+
+        if orderbook.order_index.len() != visited_nodes.len() {
+            return Err("order_index size mismatch with active linked nodes");
+        }
+
+        Ok(())
+    }
+
+    fn assert_invariants(orderbook: &Book) {
+        assert!(validate_invariants(orderbook).is_ok());
+    }
 
     #[test]
     fn test_new_order() {
+        init_test_logging_once();
         let mut orderbook = Book::new();
 
         let command = NewOrderCommand {
@@ -323,15 +462,18 @@ mod tests {
 
         let order_id = orderbook.new_order(command);
         assert!(order_id.is_ok());
-        assert_eq!(order_id.unwrap(), 1);
+        let order_id = order_id.unwrap();
+        assert_eq!(order_id % Book::DAILY_SEQ_SCALE, 1);
         assert!(orderbook.asks.is_empty());
         assert!(orderbook.bids.len() == 1);
         assert!(orderbook.bids.contains_key(&Reverse(69.0.into())));
-        assert!(orderbook.order_index.contains_key(&1));
+        assert!(orderbook.order_index.contains_key(&order_id));
+        assert_invariants(&orderbook);
     }
 
     #[test]
     fn test_cancel_order() {
+        init_test_logging_once();
         let mut orderbook = Book::new();
 
         let new_order_command = NewOrderCommand {
@@ -355,11 +497,13 @@ mod tests {
         assert!(orderbook.asks.is_empty());
         assert!(orderbook.bids.is_empty());
         assert!(orderbook.order_index.is_empty());
+        assert_invariants(&orderbook);
     }
 
 
     #[test]
     fn test_cancel_order_not_found() {
+        init_test_logging_once();
         let mut orderbook = Book::new();
 
         let cancel_order_command = CancelOrderCommand {
@@ -371,10 +515,12 @@ mod tests {
         let cancel_result = orderbook.cancel_order(cancel_order_command);
         assert!(cancel_result.is_err());
         assert!(matches!(cancel_result.err().unwrap(), OrderBookError::OrderNotFound { order_id: 202609260000001 }));
+        assert_invariants(&orderbook);
     }
 
     #[test]
     fn test_replace_order_price() {
+        init_test_logging_once();
         let mut orderbook = Book::new();
 
         let new_order_command = NewOrderCommand {
@@ -414,10 +560,12 @@ mod tests {
         assert!(!orderbook.asks.contains_key(&67.0.into()));
         assert!(orderbook.asks.contains_key(&68.0.into()));
         assert!(orderbook.asks.contains_key(&123.0.into()));
+        assert_invariants(&orderbook);
     }
 
     #[test]
     fn test_replace_order_quantity() {
+        init_test_logging_once();
         let mut orderbook = Book::new();
 
         let new_order_command = NewOrderCommand {
@@ -426,7 +574,6 @@ mod tests {
             price: 67.0.into(),
             quantity: 1.0
         };
-
         let order_id = orderbook.new_order(new_order_command).expect("Order not entered successfully!");
 
         let new_order_command_2 = NewOrderCommand {
@@ -435,7 +582,6 @@ mod tests {
             price: 67.0.into(),
             quantity: 100.0
         };
-
         let order_id_2 = orderbook.new_order(new_order_command_2).expect("Order not entered successfully!");
 
         let modify_order_command = ModifyOrderCommand {
@@ -479,12 +625,15 @@ mod tests {
         let head_node = orderbook.arena_node(head_id).expect("Head node missing");
         let tail_node = orderbook.arena_node(tail_id).expect("Tail node missing");
 
+        log::info!("{:?}, {:?}", head_node.order.order_id, tail_node.order.order_id);
+
         assert_eq!(head_node.order.order_id, order_id_2);
         assert_eq!(tail_node.order.order_id, order_id);
         assert_eq!(head_node.prev, None);
         assert_eq!(head_node.next, Some(tail_id));
         assert_eq!(tail_node.prev, Some(head_id));
         assert_eq!(tail_node.next, None);
+        assert_invariants(&orderbook);
         
 
     }

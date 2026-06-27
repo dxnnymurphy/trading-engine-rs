@@ -1,4 +1,4 @@
-use crate::models::order::Order;
+use crate::models::order::{Order, OrderResult};
 use crate::models::messages::NewOrderCommand;
 use crate::models::types::OrderId;
 use super::types::{ArenaId, LevelId};
@@ -30,13 +30,15 @@ impl ArenaNode {
     }
 
     /// Allocate the node by passing a new order command, and place within a price level.
-    pub(super) fn alloc(&mut self, order_id: OrderId, new_order_command: NewOrderCommand, prev: Option<ArenaId>, next: Option<ArenaId>, level_id: LevelId) {
+    pub(super) fn alloc(&mut self, order_id: OrderId, new_order_command: NewOrderCommand, prev: Option<ArenaId>, next: Option<ArenaId>, level_id: LevelId)-> OrderResult<()> {
         debug_assert!(!self.active, "alloc called on active ArenaNode");
-        self.order.alloc(new_order_command, order_id);
+        self.order.alloc(new_order_command, order_id)?;
         self.prev = prev;
         self.next = next;
         self.level = Some(level_id);
         self.active = true;
+
+        Ok(())
     }
 
     /// Free the node for a no longer used order.

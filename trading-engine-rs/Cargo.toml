@@ -11,6 +11,7 @@ env_logger = "0.11.8"
 figment = { version = "0.10.19", features = ["env", "test", "toml"] } 
 futures-util = "0.3.31"
 log = "0.4.29"
+rand = "0.10.1"
 rbtree = "0.2.0"
 rustc-hash = "1.1.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -23,3 +24,11 @@ tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
 [dev-dependencies]
 criterion = "0.5.1"
 hdrhistogram = "7.5.4"
+
+[[bench]]
+name = "orderbook_v1_bench"
+harness = false
+
+[[bench]]
+name = "orderbook_v1_latency_hist"
+harness = false
